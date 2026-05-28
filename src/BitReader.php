@@ -7,10 +7,19 @@ namespace Azerion\IabTcf\V2;
 /**
  * Stateful bit cursor over a binary buffer.
  *
+ * Internally keeps both the raw bytes and a 1s-and-0s view, using whichever is fastest
+ * for each access pattern: substr+bindec for small fixed-width integer reads, and
+ * byte-aligned bit-shifts with zero-byte skip for large bitfield reads.
+ *
  * @internal
  */
 final class BitReader
 {
+    /** @var array<string,string>|null  byte char => 8-bit string, built once */
+    private static ?array $byteToBitsLookUpTable = null;
+
+    private readonly string $bytes;
+
     private readonly string $bits;
 
     private readonly int $length;
@@ -19,13 +28,10 @@ final class BitReader
 
     public function __construct(string $bytes)
     {
-        $bits = '';
-        $byteLen = strlen($bytes);
-        for ($i = 0; $i < $byteLen; $i++) {
-            $bits .= str_pad(decbin(ord($bytes[$i])), 8, '0', STR_PAD_LEFT);
-        }
-        $this->bits = $bits;
-        $this->length = strlen($bits);
+        $this->bytes = $bytes;
+        $lookUpTable = self::$byteToBitsLookUpTable ??= self::buildLookUpTable();
+        $this->bits = strtr($bytes, $lookUpTable);
+        $this->length = strlen($this->bits);
     }
 
     public function position(): int
@@ -67,6 +73,9 @@ final class BitReader
     /**
      * Read a fixed-length bitfield. Returns 1-indexed IDs whose bit is set, sorted ascending.
      *
+     * Reads byte-aligned: zero-bytes are skipped without per-bit work; non-zero bytes are
+     * unrolled into 8 mask tests. Much faster than scanning the bit-string char by char.
+     *
      * @return list<int>
      */
     public function readBitfield(int $length): array
@@ -78,13 +87,74 @@ final class BitReader
             return [];
         }
         $this->guard($length);
-        $slice = substr($this->bits, $this->position, $length);
-        $this->position += $length;
 
+        $pos = $this->position;
+        $this->position = $pos + $length;
+
+        $bitOffset = $pos & 7;
+        $byteIdx = $pos >> 3;
         $ids = [];
-        for ($i = 0; $i < $length; $i++) {
-            if ($slice[$i] === '1') {
-                $ids[] = $i + 1;
+        $idBase = 1;
+        $remaining = $length;
+
+        // Handle unaligned leading bits in the first byte.
+        if ($bitOffset !== 0) {
+            $bitsInFirst = 8 - $bitOffset;
+            if ($bitsInFirst > $remaining) {
+                $bitsInFirst = $remaining;
+            }
+            $byte = ord($this->bytes[$byteIdx]);
+            for ($b = 0; $b < $bitsInFirst; $b++) {
+                if ((($byte >> (7 - $bitOffset - $b)) & 1) === 1) {
+                    $ids[] = $idBase + $b;
+                }
+            }
+            $idBase += $bitsInFirst;
+            $byteIdx++;
+            $remaining -= $bitsInFirst;
+        }
+
+        // Whole-byte fast path: skip zero bytes outright, unroll bit checks for non-zero.
+        while ($remaining >= 8) {
+            $byte = ord($this->bytes[$byteIdx]);
+            if ($byte !== 0) {
+                if (($byte & 0x80) !== 0) {
+                    $ids[] = $idBase;
+                }
+                if (($byte & 0x40) !== 0) {
+                    $ids[] = $idBase + 1;
+                }
+                if (($byte & 0x20) !== 0) {
+                    $ids[] = $idBase + 2;
+                }
+                if (($byte & 0x10) !== 0) {
+                    $ids[] = $idBase + 3;
+                }
+                if (($byte & 0x08) !== 0) {
+                    $ids[] = $idBase + 4;
+                }
+                if (($byte & 0x04) !== 0) {
+                    $ids[] = $idBase + 5;
+                }
+                if (($byte & 0x02) !== 0) {
+                    $ids[] = $idBase + 6;
+                }
+                if (($byte & 0x01) !== 0) {
+                    $ids[] = $idBase + 7;
+                }
+            }
+            $idBase += 8;
+            $byteIdx++;
+            $remaining -= 8;
+        }
+
+        // Trailing partial byte (high bits only).
+        if ($remaining > 0) {
+            $byte = ord($this->bytes[$byteIdx]);
+            for ($b = 0; $b < $remaining; $b++) {
+                if ((($byte >> (7 - $b)) & 1) === 1) {
+                    $ids[] = $idBase + $b;
+                }
             }
         }
 
@@ -109,6 +179,19 @@ final class BitReader
         }
 
         return $out;
+    }
+
+    /**
+     * @return array<string,string>
+     */
+    private static function buildLookUpTable(): array
+    {
+        $lookUpTable = [];
+        for ($i = 0; $i < 256; $i++) {
+            $lookUpTable[chr($i)] = str_pad(decbin($i), 8, '0', STR_PAD_LEFT);
+        }
+
+        return $lookUpTable;
     }
 
     private function guard(int $bits): void
