@@ -88,7 +88,7 @@ final class BitWriter
         $bytes = '';
         $byteCount = intdiv(strlen($padded), 8);
         for ($i = 0; $i < $byteCount; $i++) {
-            $bytes .= chr((int) bindec(substr($padded, $i * 8, 8)));
+            $bytes .= chr(((int) bindec(substr($padded, $i * 8, 8))) & 0xFF);
         }
 
         return $bytes;
