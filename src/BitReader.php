@@ -169,13 +169,13 @@ final class BitReader
         $out = '';
         for ($i = 0; $i < $chars; $i++) {
             $value = $this->readInt(6);
-            if ($value > 25) {
+            if ($value < 0 || $value > 25) {
                 throw TcfException::parse(
                     "six-bit char out of A..Z range: value={$value}.",
                     bitPosition: $this->position - 6,
                 );
             }
-            $out .= chr(ord('A') + $value);
+            $out .= chr(65 + $value);
         }
 
         return $out;
