@@ -42,5 +42,8 @@ jobs:
       - name: Install
         run: composer install --no-interaction --no-progress --prefer-dist
 
+      - name: Audit dependencies
+        run: composer audit --no-dev
+
       - name: CI (Pint, PHPStan, PHPUnit)
         run: composer ci
